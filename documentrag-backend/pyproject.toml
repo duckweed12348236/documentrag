@@ -1,0 +1,139 @@
+[project]
+name = "documentrag-backend"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "aiofiles>=25.1.0",
+    "celery-types>=0.26.0",
+    "celery[redis]>=5.6.3",
+    "fastapi>=0.141.1",
+    "httpx>=0.28.0",
+    "langchain>=1.4.2",
+    # ragas 0.4.3 的 llms/base.py 仍导入 langchain_community.chat_models.vertexai，该模块自 0.4.2 被移除
+    "langchain-community<0.4.2",
+    "langchain-mcp-adapters>=0.3.2",
+    "langchain-openai>=1.6.2",
+    "langchain-text-splitters>=1.1.2",
+    "langgraph>=1.2.11",
+    "langgraph-checkpoint-postgres>=3.0.0",
+    "loguru>=0.7.3",
+    "mammoth>=1.12.2",
+    "markdown-it-py>=4.2.0",
+    "minio>=7.2.20",
+    # ragas 依赖的 instructor 要求 openai<3.14.1，故放宽 openai 上限
+    "openai>=3.3.0",
+    "openpyxl>=3.1.5",
+    "orjson>=3.12.0",
+    "psycopg-pool>=3.2.0",
+    "psycopg[binary,pool]>=3.2.0",
+    "pymilvus>=3.0.2",
+    "pymupdf>=1.28.2",
+    "python-multipart>=0.0.20",
+    "python-pptx>=1.0.2",
+    # ragas 的默认变换（NERExtractor / OverlapScoreBuilder）用 rapidfuzz 计算字符串距离
+    "ragas>=0.4.3",
+    "rapidfuzz>=3.14.6",
+    "redis>=6.0.0",
+    "redis-om>=1.1.0",
+    "tavily-python>=0.8.5",
+    "tortoise-orm>=1.1.8",
+    "uvicorn>=0.53.0",
+]
+
+# Tortoise ORM CLI（tortoise init / makemigrations / migrate 等）配置来源：
+# 指向 config.py 中定义的 TORTOISE_ORM 字典（“模块路径.变量名”格式）
+[tool.tortoise]
+tortoise_orm = "config.TORTOISE_ORM"
+
+# PostgreSQL 连接配置：未配置的项使用 config.py 中的默认值
+[tool.postgres]
+host = "localhost"
+port = 5432
+user = "postgres"
+password = "123456"
+database = "productrag"
+
+# Redis 配置：未配置的项使用 config.py 中的默认值
+[tool.redis]
+host = "localhost"
+port = 6379
+db = 0
+password = ""
+
+# DeepSeek 模型配置：未配置的项使用 config.py 中的默认值
+[tool.model.deepseek]
+key = ""
+name = "deepseek-flash"
+url = "https://api.deepseek.com"
+
+# Qwen 文本向量模型配置（阿里云百炼 DashScope 原生接口）：未配置的项使用 config.py 中的默认值
+# 一次调用同时产出稠密 + 稀疏向量（Milvus 的 dense_vector / sparse_vector 都用它）
+# - key：百炼 API Key（https://bailian.console.aliyun.com 获取）
+# - name：qwen3.7-text-embedding / qwen3.7-text-embedding-flash
+# - url：原生接口根地址（插件其后拼接 /services/embeddings/text-embedding/text-embedding）；
+#        MaaS 工作空间网关为 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1
+# - dimensions：原生接口请求参数 parameters.dimension 取值
+#        2560 / 2048 / 1536 / 1024 / 768 / 512 / 256，需与 Milvus 中 dense_vector 字段维度一致
+[tool.model.qwen-embedding]
+key = ""
+name = "qwen3.7-text-embedding"
+url = "https://dashscope.aliyuncs.com/api/v1"
+dimensions = 1024
+
+# Qwen3-Reranker 文本重排模型配置（硅基流动 OpenAI 兼容 rerank 端点）：未配置的项使用 config.py 中的默认值
+# - url：完整请求地址（OpenAI 协议没有重排端点，各家路径不统一；插件直接请求该地址）
+# - model：Qwen/Qwen3-Reranker-8B
+# - key：硅基流动（SiliconFlow）控制台的 API Key，获取地址：https://cloud.siliconflow.cn/account/ak
+# - instruct_field：任务说明字段名（硅基流动为 instruction；改用百炼的 qwen3-rerank 时改为 instruct）
+[tool.model.qwen-rerank]
+url = "https://api.siliconflow.cn/v1/rerank"
+model = "Qwen/Qwen3-Reranker-8B"
+key = ""
+instruct_field = "instruction"
+
+# Celery 消息队列配置：留空时复用 [tool.redis] 拼装 broker / result backend 连接串
+[tool.celery]
+broker_url = ""
+result_url = ""
+
+# MinerU v4 精准解析 API 配置：
+# - token：https://mineru.net/apiManage 在「API 管理」页面创建
+# - base_url：通常无需改动；自建网关时可覆盖
+[tool.mineru]
+token = ""
+base_url = "https://mineru.net/api/v4"
+
+# MinIO 对象存储配置：与 docker/docker-compose.yaml 的 minio 服务保持一致
+# - endpoint：不带协议前缀，由 secure 决定 http / https
+# - bucket：不存在时由 Minio 插件在启动阶段自动创建
+[tool.minio]
+endpoint = "localhost:9000"
+access_key = "minioadmin"
+secret_key = "minioadmin"
+secure = false
+bucket = "documentrag"
+# 对外拼接访问 URL 用的端点，留空则回退 endpoint
+public_endpoint = ""
+# 存储桶是否匿名只读（公开读）：true 时外部可直接打开对象 URL
+public_read = true
+
+# Milvus 向量数据库配置：与 docker/docker-compose.yaml 的 standalone 服务保持一致
+# - endpoint：gRPC 服务端点，不带协议前缀（由 secure 决定 http / https）
+# - database：连接使用的数据库名
+# - token：服务端开启鉴权时形如 user:password，否则留空
+[tool.milvus]
+endpoint = "localhost:19530"
+secure = false
+database = "default"
+token = ""
+
+# Tavily 联网搜索配置（检索流水线的联网搜索环节）：
+# - key：API Key（https://app.tavily.com 注册后获取），留空时联网搜索不可用
+# - max_results：单次检索返回的网页片段数量上限
+# - search_depth：basic（默认，快且便宜）/ advanced（更全，更贵）
+[tool.tavily]
+key = ""
+max_results = 5
+search_depth = "basic"
+
+

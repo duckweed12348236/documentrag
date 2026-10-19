@@ -1,0 +1,177 @@
+# Docker Compose 配置文件 - 用于部署 Milvus 向量数据库及其依赖服务，以及应用依赖的 Redis
+name: productrag
+# ==================== 服务定义 ====================
+services:
+  # -------------------- etcd 服务 --------------------
+  # etcd 是一个分布式键值存储系统，用于 Milvus 的元数据存储和服务协调
+  etcd:
+    # 容器名称
+    container_name: milvus-etcd
+    # 使用 CoreOS 官方 etcd 镜像 v3.5.25 版本
+    image: quay.io/coreos/etcd:v3.5.25
+    # 环境变量配置
+    environment:
+      # 自动压缩模式：基于 revision（版本号）
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      # 保留最近 1000 个 revision，旧数据将被压缩清理
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      # 后端存储配额限制（4GB），防止数据无限增长
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      # 每处理 50000 次写操作触发一次快照
+      - ETCD_SNAPSHOT_COUNT=50000
+    # 持久化数据卷，映射到容器内 /etcd 目录
+    volumes:
+      - etcd_data:/etcd
+    # 启动命令
+    # -advertise-client-urls: 对外通告的客户端访问地址
+    # -listen-client-urls: 监听的客户端连接地址（所有网络接口）
+    # --data-dir: 数据存储目录
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    # 健康检查配置
+    healthcheck:
+      # 使用 etcdctl 检查端点健康状态
+      test: [ "CMD", "etcdctl", "endpoint", "health" ]
+      # 每 30 秒检查一次
+      interval: 30s
+      # 检查超时时间 20 秒
+      timeout: 20s
+      # 连续失败 3 次标记为不健康
+      retries: 3
+
+  # -------------------- MinIO 服务 --------------------
+  # MinIO 是 S3(Amazon Simple Storage Service，亚马逊对象存储服务) 兼容的对象存储服务，用于 Milvus 存储向量数据和索引文件
+  minio:
+    # 容器名称
+    container_name: milvus-minio
+    # MinIO 官方镜像指定版本
+    image: quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z
+    # 环境变量配置
+    environment:
+      # MinIO 访问密钥（用户名）
+      MINIO_ACCESS_KEY: minioadmin
+      # MinIO 秘密密钥（密码）
+      MINIO_SECRET_KEY: minioadmin
+    # 端口映射（主机端口:容器端口）
+    ports:
+      # 控制台 Web UI 端口映射
+      - "9001:9001"
+      # API 服务端口映射
+      - "9000:9000"
+    # 持久化数据卷，映射到容器内 /minio_data 目录
+    volumes:
+      - minio_data:/minio_data
+    # 启动命令
+    # server /minio_data: 指定数据存储目录
+    # --console-address ":9001": 指定控制台监听端口 9001
+    command: minio server /minio_data --console-address ":9001"
+    # 健康检查配置
+    healthcheck:
+      # 使用 curl 请求 MinIO 的健康检查端点
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      # 每 30 秒检查一次
+      interval: 30s
+      # 检查超时时间 20 秒
+      timeout: 20s
+      # 连续失败 3 次标记为不健康
+      retries: 3
+
+  # -------------------- Milvus Standalone 服务 --------------------
+  # Milvus 向量数据库核心服务（单机模式），集成了所有组件
+  standalone:
+    # 容器名称
+    container_name: milvus-standalone
+    # Milvus 官方镜像 v2.6.15 版本
+    image: milvusdb/milvus:v2.6.15
+    # 以 standalone（单机）模式运行
+    command: [ "milvus", "run", "standalone" ]
+    # 安全选项配置
+    security_opt:
+      # 禁用 seccomp 安全限制，提升性能（生产环境慎用）
+      - seccomp:unconfined
+    # 环境变量配置
+    environment:
+      # etcd 服务地址（服务发现和元数据存储）
+      ETCD_ENDPOINTS: etcd:2379
+      # MinIO 服务地址（对象存储）
+      MINIO_ADDRESS: minio:9000
+      # 消息队列类型：woodpecker（内嵌式消息队列）
+      MQ_TYPE: woodpecker
+    # 数据卷挂载
+    volumes:
+      # 持久化数据卷，存储 Milvus 数据文件
+      - milvus_data:/var/lib/milvus
+      # 挂载自定义配置文件（只读），覆盖默认配置
+      - ./milvus/milvus.yaml:/milvus/configs/milvus.yaml
+    # 健康检查配置
+    healthcheck:
+      # 使用 curl 请求 Milvus 健康检查端点（端口 9091）
+      test: [ "CMD", "curl", "-f", "http://localhost:9091/healthz" ]
+      # 每 30 秒检查一次
+      interval: 30s
+      # 启动后等待 90 秒才开始健康检查（服务启动较慢）
+      start_period: 90s
+      # 检查超时时间 20 秒
+      timeout: 20s
+      # 连续失败 3 次标记为不健康
+      retries: 3
+    # 端口映射（主机端口:容器端口）
+    ports:
+      # gRPC 服务端口（Milvus 客户端连接端口）
+      - "19530:19530"
+      # 健康检查和监控指标端口
+      - "9091:9091"
+    # 服务依赖声明
+    depends_on:
+      # 依赖 etcd 服务（先启动 etcd）
+      - "etcd"
+      # 依赖 MinIO 服务（先启动 minio）
+      - "minio"
+
+  # -------------------- Redis 服务 --------------------
+  # Redis 作为 Celery 的消息代理（broker）与结果后端（backend），
+  # 同时用于短期记忆（checkpoint）缓存
+  # 使用 Redis Stack 镜像，内置 RediSearch（全文/向量检索）与 ReJSON（JSON 文档）扩展
+  redis:
+    # 容器名称
+    container_name: redis
+    # Redis Stack Server 官方镜像（基于 Redis 7.4，预装 RediSearch、ReJSON、RedisTimeSeries、RedisBloom 等模块）
+    image: redis/redis-stack-server:7.4.0-v0
+    # 端口映射（主机端口:容器端口）
+    ports:
+      # Redis 服务端口
+      - "6379:6379"
+    # 持久化数据卷，映射到容器内 /data 目录
+    volumes:
+      - redis_data:/data
+    # 启动命令
+    # --appendonly yes: 开启 AOF 持久化，重启后数据不丢失
+    # 镜像入口即 redis-stack-server（内置 RediSearch/ReJSON 模块），参数会透传给底层的 redis-server
+    command: redis-stack-server --appendonly yes
+    # 健康检查配置
+    healthcheck:
+      # 使用 redis-cli ping 检查服务是否可用
+      test: [ "CMD", "redis-cli", "ping" ]
+      # 每 30 秒检查一次
+      interval: 30s
+      # 检查超时时间 20 秒
+      timeout: 20s
+      # 连续失败 3 次标记为不健康
+      retries: 3
+
+# ==================== 网络配置 ====================
+networks:
+  # 默认网络配置
+  default:
+    # 自定义网络名称（所有服务使用同一网络）
+    name: milvus
+
+# ==================== 数据卷配置 ====================
+volumes:
+  # etcd 数据卷（持久化 etcd 数据）
+  etcd_data:
+  # MinIO 数据卷（持久化对象存储数据）
+  minio_data:
+  # Milvus 数据卷（持久化向量数据）
+  milvus_data:
+  # Redis 数据卷（持久化缓存与队列数据）
+  redis_data:
